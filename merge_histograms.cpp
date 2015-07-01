@@ -7,6 +7,7 @@
 #include <string.h>
 #include <vector>
 #include <list>
+#include <algorithm>
 #include <dirent.h>
 #include <unistd.h>  // getopt
 #include <getopt.h>  // getopt_long
@@ -15,6 +16,11 @@
 #include <ctype.h>  // isdigit
 #include <limits.h>
 //#include <sys/types.h>
+
+#include "TFile.h"
+#include "TH1.h"
+#include "TH2.h"
+#include "TH3.h"
 
 /* Flag set by `--verbose'. */
 static int verbose_flag;
@@ -49,7 +55,8 @@ void print_help(const char* name)
               << indent << "histogram(s) which should be merged\n"
               << indent << "from each input file\n"
               << indent << "Use the keyword 'all' to merge all\n"
-              << indent << "histograms stored in the given files"
+              << indent << "histograms stored in the given files\n"
+              << "\t--verbose\t\tPrint additional information"
               << std::endl;
 }
 
@@ -315,6 +322,18 @@ int check_file(const char* name)
 	return 1;
 }
 
+struct TestFunctor {
+	bool operator()(TObject *obj)
+	{
+		return true;
+	}
+} listobj;
+
+void myfunction(int i)
+{
+	std::cout << ' ' << i;
+}
+
 int main(int argc, char** argv)
 {
 	// the extension of the files which should be used
@@ -330,7 +349,7 @@ int main(int argc, char** argv)
 	char output[PATH_MAX+1] = "";
 	char path[PATH_MAX+1] = "";
 	bool merge_all = false;
-	std::vector<const char*> histograms;
+	std::vector<std::string> histograms;
 	std::list<std::string> files;
 
 	/*
@@ -347,7 +366,7 @@ int main(int argc, char** argv)
 				if (!strcmp(optarg, "all"))
 					merge_all = true;
 				else
-					histograms.push_back(optarg);
+					histograms.push_back(std::string(optarg));
 				break;
 			case 'o':
 				strcpy(output, optarg);
@@ -399,7 +418,7 @@ int main(int argc, char** argv)
 
 	if (!merge_all)
 		for (int i = optind; i < argc; i++)
-			histograms.push_back(argv[i]);
+			histograms.push_back(std::string(argv[i]));
 
 	if (!input[0] && !path[0]) {
 		fprintf(stderr, "You've specified neither a file nor a directory as input!\n");
@@ -410,7 +429,7 @@ int main(int argc, char** argv)
 	}
 
 	if (verbose_flag)
-		printf("verbose_flag is set\n");
+		std::cout << "verbose flag is set\nAdditional information will be printed" << std::endl;
 
 	// if path is specified, read in all root files which are stored in this directory
 	if (path[0]) {
@@ -463,13 +482,74 @@ int main(int argc, char** argv)
 		std::cout << it << std::endl;
 	putchar('\n');
 
-	if (merge_all)
+	if (merge_all && verbose_flag)
 		std::cout << "All histograms from the files will be read in and merged" << std::endl;
-	else {
-		std::cout << "The following " << histograms.size() << " histograms will be considered:" << std::endl;
-		for (auto && str : histograms)
-			printf("   %s\n", str);
+
+	/* start of the ROOT related code */
+
+	TFile* file;
+	TDirectory* dir;
+	//TIterator iter;
+	char dir_name[128];
+	std::vector<TH1*> merged_histograms;
+	// if all histograms should be merged, open the first file to get a list of all histograms
+	if (merge_all) {
+		file = TFile::Open(files.front().c_str());
+		if (!file->IsOpen()) {
+			std::cerr << "Unable to open file '" << file->GetName() << "'. Will terminate." << std::endl;
+			return EXIT_FAILURE;
+		}
+		// check if there is more than one directory in the file
+		if (file->GetListOfKeys()->GetSize() > 1)
+			std::cout << "Found more than one directory in file " << file->GetName() << std::endl
+				<< "Will only use the first directory in all files" << std::endl;
+		else if (!file->GetListOfKeys()->GetSize()) {
+			std::cerr << "Found no directory in file '" << file->GetName() << "'. Will terminate." << std::endl;
+			file->Close();
+			return EXIT_FAILURE;
+		}
+		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
+		dir = file->GetDirectory(dir_name);
+		//iter = dir->GetListOfKeys()->MakeIterator();
+		TIter iter(dir->GetListOfKeys());
+		std::for_each(iter.Begin(), TIter::End(), [&histograms](TObject* o){ histograms.push_back(std::string(o->GetName())); });
+		if (verbose_flag) {
+			auto list_infos = [](TObject* o)
+				{
+					std::cout << "name: "
+						<< o->GetName()
+						<< ", title: "
+						<< o->GetTitle()
+						<< std::endl;
+				};
+			std::cout << "The following histograms are stored in the file:" << std::endl;
+			std::for_each(iter.Begin(), TIter::End(), list_infos);
+			putchar('\n');
+		}
+		file->Close();
 	}
+
+	std::cout << "The following " << histograms.size() << " histograms will be considered:" << std::endl;
+	for (auto && str : histograms)
+		printf("   %s\n", str.c_str());
+
+	for (auto it : files) {
+		file = TFile::Open(it.c_str());
+		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
+		dir = file->GetDirectory(dir_name);
+		if (merged_histograms.empty())
+			for (auto && name : histograms)
+				merged_histograms.push_back(dynamic_cast<TH1*>(dir->Get(name.c_str())->Clone(name.c_str())));
+		else
+			for (auto hist : merged_histograms)
+				hist->Add(dynamic_cast<TH1*>(dir->Get(hist->GetName())));
+		file->Close();
+	}
+
+	file = TFile::Open(output, "RECREATE");
+	for (auto hist : merged_histograms)
+		hist->Write();
+	file->Close();
 
 	return EXIT_SUCCESS;
 }
