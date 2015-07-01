@@ -84,12 +84,30 @@ bool cmp_nocase(std::string first, std::string second)
 
 const char* join_path(const char* path1, const char* path2, const char* path_sep = "/")
 {
-	char* path = new char[128];
+	char* path = new char[PATH_MAX+1];
 	strcpy(path, path1);
 	strcat(path, path_sep);
 	strcat(path, path2);
 
 	return path;
+}
+
+void remove_trailing_slash(char* path)
+{
+	std::string pathname(path);
+	while (!pathname.empty() && pathname.back() == '/')
+		pathname.pop_back();
+
+	path = const_cast<char*>(pathname.c_str());
+}
+
+void add_trailing_slash(char* path)
+{
+	std::string pathname(path);
+	if (!pathname.empty() && pathname.back() != '/')
+		pathname += '/';
+
+	path = const_cast<char*>(pathname.c_str());
 }
 
 /*char* get_basename(char* path)
@@ -208,24 +226,16 @@ int main(int argc, char** argv)
 	std::vector<const char*> histograms;
 	std::list<std::string> files;
 
-	//TODO: Change behaviour to flags which are set to true if used and then parse them afterwards to only show or process arguments if no errors occured
 	/*
 	 * POSIX: if the first letter of the optstring is a colon, a colon is returned if an argument is missing, otherwise a questionmark
-	 * With only a minus at the beginning, which is used to detect strings as parameters (files) in GNUs getopt implementation with the 'letter' ^A ('\1'), a questionmark is returned. But it _has_ to be at the beginning, otherwise strings are not detected. It seems to work also with a colon after the minus. That's why the string starts with "-:"
 	 * A -- will terminate the while loop, './program -- abc' won't process the other arguments
 	 */
 	while ((opt = getopt_long(argc, argv, "ho:p:d:i:", long_options, &option_index)) != -1) {
-		//printf("\topt: %c, optarg: %s\n", opt, optarg);
 		switch (opt) {
 			case 0:
 				/* If this option sets a flag, do nothing else now. */
 				if (long_options[option_index].flag != 0)
 					break;
-				/*printf ("option %s", long_options[option_index].name);
-				if (optarg)
-					printf (" with arg %s", optarg);
-				printf ("\n");
-				break;*/
 			case 'p':
 				if (!strcmp(optarg, "all"))
 					merge_all = true;
@@ -263,6 +273,7 @@ int main(int argc, char** argv)
 				}
 				//printf("Use directory: %s\n", optarg);
 				strcpy(path, optarg);
+				remove_trailing_slash(path);
 				closedir(d);
 				d = NULL;
 				break;
@@ -273,7 +284,6 @@ int main(int argc, char** argv)
 				// option argument is missing
 				fprintf(stderr, "%s: option '-%c' requires an argument\n", argv[0], optopt);
 				return EXIT_FAILURE;
-				//return EXIT_FAILURE;
 			case '?':
 			default:
 				fprintf(stderr, "%s: option '-%c' is invalied\n", argv[0], optopt);
@@ -306,37 +316,17 @@ int main(int argc, char** argv)
 	if (verbose_flag)
 		printf("verbose_flag is set\n");
 
-	/* Print any remaining command line arguments (not options). */
-	/*if (optind < argc) {
-		printf("non-option ARGV-elements: ");
-		while (optind < argc)
-			printf("%s ", argv[optind++]);
-		putchar('\n');
-	}
-
-	if (f)
-		fclose(f);*/
-
-	const char* _path = get_real_path(path);
-	if (!_path) {
-		fprintf(stderr, "Directory '%s' couldn't be found!\n", path);
-		fprintf(stderr, "Please make sure the directory exists and is readable.\n");
-		return EXIT_FAILURE;
-	}
-
 	// get a list of all files
-	list_files(_path, files);
+	list_files(path, files);
 	if (files.empty()) {
-		fprintf(stderr, "Directory '%s' doesn't contain any files!\n", _path);
+		fprintf(stderr, "Directory '%s' doesn't contain any files!\n", path);
 		return EXIT_FAILURE;
 	}
-
-	//files.sort(cmp_nocase);  // sort the content of the directory
 
 	// filter the list for root files
 	filter_list(files, ext);
 	if (files.empty()) {
-		fprintf(stderr, "Directory '%s' doesn't contain any %s-files!\n", _path, ext);
+		fprintf(stderr, "Directory '%s' doesn't contain any %s-files!\n", path, ext);
 		return EXIT_FAILURE;
 	}
 
