@@ -83,6 +83,36 @@ bool cmp_nocase(std::string first, std::string second)
 	else return false;
 }
 
+void remove_trailing_slash(char* path)
+{
+	std::string pathname(path);
+	while (!pathname.empty() && pathname.back() == '/')
+		pathname.pop_back();
+
+	strcpy(path, pathname.c_str());
+}
+
+void remove_trailing_slash(std::string& path)
+{
+	while (!path.empty() && path.back() == '/')
+		path.pop_back();
+}
+
+void add_trailing_slash(char* path)
+{
+	std::string pathname(path);
+	if (!pathname.empty() && pathname.back() != '/')
+		pathname += '/';
+
+	strcpy(path, pathname.c_str());
+}
+
+void add_trailing_slash(std::string& path)
+{
+	if (!path.empty() && path.back() != '/')
+		path += '/';
+}
+
 const char* join_path(const char* path1, const char* path2, const char* path_sep = "/")
 {
 	char* path = new char[PATH_MAX+1];
@@ -93,22 +123,16 @@ const char* join_path(const char* path1, const char* path2, const char* path_sep
 	return path;
 }
 
-void remove_trailing_slash(char* path)
+const char* join_path(const std::string path1, const std::string path2, const std::string path_sep = "/")
 {
-	std::string pathname(path);
-	while (!pathname.empty() && pathname.back() == '/')
-		pathname.pop_back();
-
-	strcpy(path, pathname.c_str());
+	return (path1 + path_sep + path2).c_str();
 }
 
-void add_trailing_slash(char* path)
+const std::string join_path_str(const std::string path1, const std::string path2)
 {
-	std::string pathname(path);
-	if (!pathname.empty() && pathname.back() != '/')
-		pathname += '/';
-
-	strcpy(path, pathname.c_str());
+	std::string path(path1);
+	add_trailing_slash(path);
+	return path + path2;
 }
 
 std::string get_base_name(const std::string& str,
@@ -158,12 +182,6 @@ std::string reduce(const std::string& str,
 
 	return result;
 }
-
-/*char* get_basename(char* path)
-{
-    char *base = strrchr(path, '/');
-    return base ? base+1 : path;
-}*/
 
 // recursively get all files from a given directory path
 void list_files(const char* path, std::list<std::string>& file_list)
@@ -245,18 +263,10 @@ const char* get_real_path(const char* path)
 		return new_path;
 	}
 
-/*	char* _path = realpath(path, NULL);
-
-	if (!_path) {
-		fprintf(stderr, "The path '%s' could not be resolved!\n", path);
-		exit(EXIT_FAILURE);
-	}
-
-	free(_path);*/
-
 	return NULL;
 }
 
+// get the directory where a program (with a specific pid) is located
 int get_program_directory(char* path,
                           size_t size = PATH_MAX,
                           pid_t pid = getpid())
@@ -276,6 +286,7 @@ int get_program_directory(char* path,
 	return 0;
 }
 
+// get the directory where the current program is located
 std::string get_selfpath()
 {
 	char buf[PATH_MAX];
@@ -293,6 +304,7 @@ std::string get_selfpath()
 	}
 }
 
+// check if a file exists by opening and closing it
 int check_file(const char* name)
 {
 	FILE *f = NULL;
@@ -350,7 +362,6 @@ int main(int argc, char** argv)
 					fprintf(stderr, "Error opening file %s: %s\n", optarg, strerror(errno));
 					return EXIT_FAILURE;
 				}
-				//printf("Use config file: %s\n", optarg);
 				strcpy(input, optarg);
 				fclose(f);
 				f = NULL;  // set the pointer to NULL, otherwise a check for it will return true and closing the already closed file will cause undefined behaviour --> probably segfault
@@ -366,7 +377,6 @@ int main(int argc, char** argv)
 					fprintf(stderr, "Error opening the directory %s: %s\n", optarg, strerror(errno));
 					return EXIT_FAILURE;
 				}
-				//printf("Use directory: %s\n", optarg);
 				strcpy(path, optarg);
 				remove_trailing_slash(path);
 				closedir(d);
@@ -398,15 +408,6 @@ int main(int argc, char** argv)
 		fprintf(stderr, "Use either -i/--input-file or -d/--directory, not both!\n");
 		return EXIT_FAILURE;
 	}
-
-	if (merge_all)
-		std::cout << "All histograms from the files will be read in and merged" << std::endl;
-	else {
-		std::cout << "The following " << histograms.size() << " histograms will be considered:" << std::endl;
-		for (auto && str : histograms)
-			printf("   %s\n", str);
-	}
-	putchar('\n');
 
 	if (verbose_flag)
 		printf("verbose_flag is set\n");
@@ -446,10 +447,10 @@ int main(int argc, char** argv)
 				files.push_back(line);
 			else if (check_file(join_path(cwd, line.c_str())))
 				files.push_back(std::string(join_path(cwd, line.c_str())));
-			else if (check_file(join_path(program_path.c_str(), line.c_str())))
-				files.push_back(std::string(join_path(program_path.c_str(), line.c_str())));
+			else if (check_file(join_path(program_path, line)))
+				files.push_back(std::string(join_path_str(program_path, line)));
 			else
-				printf("WARNING: Couldn't find file %s, skip it\n", line.c_str());
+				printf("WARNING: Couldn't find file '%s', skip it\n", line.c_str());
 		}
 		in.close();
 	} else {  // this case should never happen
@@ -457,8 +458,18 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
+	std::cout << "The following files will be merged:" << std::endl;
 	for (auto it : files)
 		std::cout << it << std::endl;
+	putchar('\n');
+
+	if (merge_all)
+		std::cout << "All histograms from the files will be read in and merged" << std::endl;
+	else {
+		std::cout << "The following " << histograms.size() << " histograms will be considered:" << std::endl;
+		for (auto && str : histograms)
+			printf("   %s\n", str);
+	}
 
 	return EXIT_SUCCESS;
 }
