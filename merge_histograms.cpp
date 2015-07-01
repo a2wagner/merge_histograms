@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
+#include <fstream>
 #include <string.h>
 #include <vector>
 #include <list>
@@ -98,7 +99,7 @@ void remove_trailing_slash(char* path)
 	while (!pathname.empty() && pathname.back() == '/')
 		pathname.pop_back();
 
-	path = const_cast<char*>(pathname.c_str());
+	strcpy(path, pathname.c_str());
 }
 
 void add_trailing_slash(char* path)
@@ -107,7 +108,55 @@ void add_trailing_slash(char* path)
 	if (!pathname.empty() && pathname.back() != '/')
 		pathname += '/';
 
-	path = const_cast<char*>(pathname.c_str());
+	strcpy(path, pathname.c_str());
+}
+
+std::string get_base_name(const std::string& str,
+                          const std::string& path_sep = "/\\")
+{
+	const size_t end = str.find_last_of(path_sep);
+	if (end == std::string::npos)
+		return str;  // no path given, return string
+
+	return str.substr(0, end);
+}
+
+// trim whitespaced at the beginning and the end of a string
+std::string trim(const std::string& str,
+                 const std::string& whitespace = " \t")
+{
+	const auto begin = str.find_first_not_of(whitespace);
+	if (begin == std::string::npos)
+		return "";  // no content
+
+	const auto end = str.find_last_not_of(whitespace);
+	const auto range = end - begin + 1;
+
+	return str.substr(begin, range);
+}
+
+// first trim the string, then reduce whitespaces between substrings to 'fill'
+std::string reduce(const std::string& str,
+                   const std::string& fill = " ",
+                   const std::string& whitespace = " \t")
+{
+	// trim first
+	auto result = trim(str, whitespace);
+
+	// replace sub ranges
+	auto begin_space = result.find_first_of(whitespace);
+	while (begin_space != std::string::npos)
+	{
+		const auto end_space = result.find_first_not_of(whitespace, begin_space);
+		const auto range = end_space - begin_space;
+
+		result.replace(begin_space, range, fill);
+
+		const auto new_start = begin_space + fill.length();
+		begin_space = result.find_first_of(whitespace, new_start);
+	}
+
+	return result;
 }
 
 /*char* get_basename(char* path)
@@ -206,6 +255,52 @@ const char* get_real_path(const char* path)
 	free(_path);*/
 
 	return NULL;
+}
+
+int get_program_directory(char* path,
+                          size_t size = PATH_MAX,
+                          pid_t pid = getpid())
+{
+	char sz_tmp[32];
+	char buf[size];
+	sprintf(sz_tmp, "/proc/%d/exe", pid);
+	ssize_t len = readlink(sz_tmp, buf, sizeof(buf)-1);
+	if (len == -1)
+		return len;
+	buf[len] = '\0';
+	// find last occurence of '/' to get obtain the path
+	char* ch = strrchr(buf, '/');
+	// set end marker to the new position
+	buf[ch-buf] = '\0';
+	strcpy(path, buf);
+	return 0;
+}
+
+std::string get_selfpath()
+{
+	char buf[PATH_MAX];
+	ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf)-1);
+	if (len != -1) {
+		buf[len] = '\0';
+		std::string str(buf);
+		// remove program name from path
+		str = get_base_name(str);
+		return str;
+	} else {
+		std::cerr << "Overflow by reading program path (off-by-one underflow)"
+		<< std::endl;
+		exit(EXIT_FAILURE);
+	}
+}
+
+int check_file(const char* name)
+{
+	FILE *f = NULL;
+	f = fopen(name, "r");
+	if (!f)
+		return 0;
+	fclose(f);
+	return 1;
 }
 
 int main(int argc, char** argv)
@@ -316,17 +411,49 @@ int main(int argc, char** argv)
 	if (verbose_flag)
 		printf("verbose_flag is set\n");
 
-	// get a list of all files
-	list_files(path, files);
-	if (files.empty()) {
-		fprintf(stderr, "Directory '%s' doesn't contain any files!\n", path);
-		return EXIT_FAILURE;
-	}
+	// if path is specified, read in all root files which are stored in this directory
+	if (path[0]) {
+		// get a list of all files
+		list_files(path, files);
+		if (files.empty()) {
+			fprintf(stderr, "Directory '%s' doesn't contain any files!\n", path);
+			return EXIT_FAILURE;
+		}
 
-	// filter the list for root files
-	filter_list(files, ext);
-	if (files.empty()) {
-		fprintf(stderr, "Directory '%s' doesn't contain any %s-files!\n", path, ext);
+		// filter the list for root files
+		filter_list(files, ext);
+		if (files.empty()) {
+			fprintf(stderr, "Directory '%s' doesn't contain any %s-files!\n", path, ext);
+			return EXIT_FAILURE;
+		}
+	} else if (input[0]) {  // else input has to be specified, read the list and filter if necessary
+		std::ifstream in(input);
+		std::string line;
+		// paths to find the given root files in case of relative paths
+		char cwd[PATH_MAX];
+		getcwd(cwd, PATH_MAX-1);
+		std::string program_path = get_selfpath();
+		while (std::getline(in, line)) {
+			line = trim(line);
+			// skip empty lines or lines which start with a hash
+			if (line.empty() || line.find("#") == 0)
+				continue;
+			// check if the string contains the desired extension, skip if not
+			if (!strstr(line.c_str(), ext))
+				continue;
+			// try to find the files
+			if (check_file(line.c_str()))
+				files.push_back(line);
+			else if (check_file(join_path(cwd, line.c_str())))
+				files.push_back(std::string(join_path(cwd, line.c_str())));
+			else if (check_file(join_path(program_path.c_str(), line.c_str())))
+				files.push_back(std::string(join_path(program_path.c_str(), line.c_str())));
+			else
+				printf("WARNING: Couldn't find file %s, skip it\n", line.c_str());
+		}
+		in.close();
+	} else {  // this case should never happen
+		std::cerr << "No source to obtain list of files existing, this shouldn't happen!" << std::endl;
 		return EXIT_FAILURE;
 	}
 
