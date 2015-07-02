@@ -1,4 +1,4 @@
-// compile with: g++ -std=c++11 -O3 merge_histograms.cpp -o merge_histograms `root-config --cflags --glibs` -lSpectrum
+// compile with: g++ -std=c++11 -O3 merge_histograms.cpp -o merge_histograms `root-config --cflags --glibs` -lSpectrum -lHistPainter
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -8,6 +8,7 @@
 #include <vector>
 #include <list>
 #include <algorithm>
+#include <exception>
 #include <dirent.h>
 #include <unistd.h>  // getopt
 #include <getopt.h>  // getopt_long
@@ -17,10 +18,10 @@
 #include <limits.h>
 //#include <sys/types.h>
 
+#include "TClass.h"
 #include "TFile.h"
 #include "TH1.h"
-#include "TH2.h"
-#include "TH3.h"
+#include "TCollection.h"
 
 /* Flag set by `--verbose'. */
 static int verbose_flag;
@@ -322,6 +323,33 @@ int check_file(const char* name)
 	return 1;
 }
 
+// read recursively ROOT collections to get specific class types and add them to a given list
+template <typename T>
+void get_list_of(std::list<T*>& list, const TCollection* coll, const TClass* clas)
+{
+	TObject* obj;
+	TIter next(coll);
+	while ((obj = next())/* && obj->IsA()->HasDictionary()*/) {
+		if (obj->IsA()->InheritsFrom(clas))
+			list.push_back(dynamic_cast<T*>(obj));
+		else if (obj->IsA()->InheritsFrom(TDirectory::Class())) {
+			TDirectory* subdir = static_cast<TDirectory*>(obj);
+			subdir->ReadAll();  // read directory to get useful lists
+			get_list_of(list, subdir->GetList(), clas);
+		}
+	}
+}
+
+void get_list_of_directories(std::list<TDirectory*>& list, const TCollection* coll)
+{
+	get_list_of(list, coll, TDirectory::Class());
+}
+
+void get_list_of_histograms(std::list<TH1*>& list, const TCollection* coll)
+{
+	get_list_of(list, coll, TH1::Class());
+}
+
 int main(int argc, char** argv)
 {
 	// the extension of the files which should be used
@@ -477,8 +505,6 @@ int main(int argc, char** argv)
 
 	TFile* file;
 	TDirectory* dir;
-	//TIterator iter;
-	char dir_name[128];
 	std::vector<TH1*> merged_histograms;
 	// if all histograms should be merged, open the first file to get a list of all histograms
 	if (merge_all) {
@@ -488,31 +514,88 @@ int main(int argc, char** argv)
 			return EXIT_FAILURE;
 		}
 		// check if there is more than one directory in the file
-		if (file->GetListOfKeys()->GetSize() > 1)
-			std::cout << "Found more than one directory in file " << file->GetName() << std::endl
-				<< "Will only use the first directory in all files" << std::endl;
-		else if (!file->GetListOfKeys()->GetSize()) {
-			std::cerr << "Found no directory in file '" << file->GetName() << "'. Will terminate." << std::endl;
+		std::list<TDirectory*> dirs;
+		// use ReadAll() to read the contents of the file in order that GetList returns a non-empty list
+		// if the file contains own classes without a dictionary, it is likely a std::bad_alloc exception is thrown
+		// in this case use GetListOfKeys() to read in file contents, which works in this case
+		// use a bool to indicate this and use the list of keys in this case
+		bool excpt = false;
+		try {
+			file->ReadAll();
+		} catch (std::exception const& ex) {
+			std::cout << "Exception thrown: " << ex.what() << std::endl;
+			std::cout << "******************************************************" << std::endl;
+			std::cout << "*                                                    *" << std::endl;
+			std::cout << "*  WARNING: If the files contain other objects than  *" << std::endl;
+			std::cout << "*           the usual ROOT classes like TH1D, make   *" << std::endl;
+			std::cout << "*           sure you specify explicitely only known  *" << std::endl;
+			std::cout << "*           class types or link the corresponding    *" << std::endl;
+			std::cout << "*           libraries during compilation, otherwise  *" << std::endl;
+			std::cout << "*           the program might crash while working    *" << std::endl;
+			std::cout << "*           with unknown classes                     *" << std::endl;
+			std::cout << "*                                                    *" << std::endl;
+			std::cout << "******************************************************" << std::endl;
+			file->GetListOfKeys();
+			excpt = true;
+		}
+		get_list_of_directories(dirs, excpt ? file->GetListOfKeys() : file->GetList());
+		if (dirs.empty() && !file->GetListOfKeys()->GetSize()) {
+			std::cerr << "The file '" << file->GetName() << "' seems to be empty. Will terminate." << std::endl;
 			file->Close();
 			return EXIT_FAILURE;
 		}
-		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
-		dir = file->GetDirectory(dir_name);
-		//iter = dir->GetListOfKeys()->MakeIterator();
-		TIter iter(dir->GetListOfKeys());
-		std::for_each(iter.Begin(), TIter::End(), [&histograms](TObject* o){ histograms.push_back(std::string(o->GetName())); });
-		if (verbose_flag) {
-			auto list_infos = [](TObject* o)
-				{
-					std::cout << "Name: "
-						<< o->GetName()
-						<< ",\tTitle: "
-						<< o->GetTitle()
-						<< std::endl;
-				};
-			std::cout << "The following histograms are stored in the file:" << std::endl;
-			std::for_each(iter.Begin(), TIter::End(), list_infos);
-			putchar('\n');
+		bool only_first_dir = false;
+		if (dirs.size() > 1) {
+			std::cout << "Found more than one directory in file " << file->GetName() << "." << std::endl;
+			std::cout << "Could use only the first directory or all of them." << std::endl;
+			std::cout << "What should be done? Use all directories? [y/n]: ";
+			unsigned int i = 0;
+			char response[8];
+			while (1) {
+				std::cin >> response;
+				if (!strcmp(response, "n") || !strcmp(response, "N") || !strcmp(response, "no")) {
+					only_first_dir = true;
+					break;
+				} else if (!strcmp(response, "y") || !strcmp(response, "Y") || !strcmp(response, "yes"))
+					break;
+				if (++i < 3)
+					std::cout << "Couldn't understand your input, please try again [y/n]: ";
+				else {
+					std::cout << "Sorry, no more tries, will use all directories" << std::endl;
+					break;
+				}
+			}
+			if (only_first_dir)
+				std::cout << "Will only take the first directory into account to collect histograms" << std::endl;
+			else {
+				// read in all histograms from the ROOT file
+				std::list<TH1*> hists;
+				get_list_of_histograms(hists, file->GetList());
+				std::for_each(hists.begin(), hists.end(), [&histograms](TH1* h){ histograms.push_back(std::string(h->GetName())); });
+			}
+		}
+		if (dirs.size() <= 1) {
+			if (dirs.size() == 1 || only_first_dir)  // only use the first directory to collect histograms
+				dir = file->GetDirectory(dirs.front()->GetName());
+			else  // no directory, use key list to obtain histograms
+				dir = file;  // TFile inherits from TDirectory, hance file can be assigned to dir in order to use the same structure below for both cases
+			TIter iter(dir->GetListOfKeys());
+			std::for_each(iter.Begin(), TIter::End(), [&histograms](TObject* o){ histograms.push_back(std::string(o->GetName())); });
+			if (verbose_flag) {
+				auto list_infos = [](TObject* o)
+					{
+						std::cout << "Class: "
+							<< o->IsA()->GetName()
+							<< ",\tName: "
+							<< o->GetName()
+							<< ",\tTitle: "
+							<< o->GetTitle()
+							<< std::endl;
+					};
+				std::cout << "The following histograms are stored in the file:" << std::endl;
+				std::for_each(iter.Begin(), TIter::End(), list_infos);
+				putchar('\n');
+			}
 		}
 		file->Close();
 	}
@@ -528,23 +611,21 @@ int main(int argc, char** argv)
 			continue;
 		}
 		if (!file->GetListOfKeys()->GetSize()) {
-			std::cerr << "Found no directory in file '" << file->GetName() << "'. Skip this file." << std::endl;
+			std::cerr << "The file '" << file->GetName() << "' seems to be empty. Skip this file." << std::endl;
 			file->Close();
 			continue;
 		}
-		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
-		dir = file->GetDirectory(dir_name);
 		if (merged_histograms.empty())
 			for (auto && name : histograms) {
-				TH1* h = dynamic_cast<TH1*>(dir->Get(name.c_str()));
+				TH1* h = dynamic_cast<TH1*>(file->FindObjectAny(name.c_str()));
 				h->SetDirectory(0);  // revoke gDirectory object ownership that this histogram won't get deleted when the file or directory is closed
 				merged_histograms.push_back(h);
 			}
 		else
 			for (auto hist : merged_histograms) {
-				TH1* h = dynamic_cast<TH1*>(dir->Get(hist->GetName()));
+				TH1* h = dynamic_cast<TH1*>(file->FindObjectAny(hist->GetName()));
 				if (!h) {
-					std::cerr << "Histogram " << hist->GetName() << "not found in file " << file->GetName() << ". Skipt it." << std::endl;
+					std::cerr << "Histogram " << hist->GetName() << " not found in file " << file->GetName() << ". Skipt it." << std::endl;
 					continue;
 				}
 				hist->Add(h);
