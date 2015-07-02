@@ -322,18 +322,6 @@ int check_file(const char* name)
 	return 1;
 }
 
-struct TestFunctor {
-	bool operator()(TObject *obj)
-	{
-		return true;
-	}
-} listobj;
-
-void myfunction(int i)
-{
-	std::cout << ' ' << i;
-}
-
 int main(int argc, char** argv)
 {
 	// the extension of the files which should be used
@@ -516,9 +504,9 @@ int main(int argc, char** argv)
 		if (verbose_flag) {
 			auto list_infos = [](TObject* o)
 				{
-					std::cout << "name: "
+					std::cout << "Name: "
 						<< o->GetName()
-						<< ", title: "
+						<< ",\tTitle: "
 						<< o->GetTitle()
 						<< std::endl;
 				};
@@ -538,8 +526,11 @@ int main(int argc, char** argv)
 		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
 		dir = file->GetDirectory(dir_name);
 		if (merged_histograms.empty())
-			for (auto && name : histograms)
-				merged_histograms.push_back(dynamic_cast<TH1*>(dir->Get(name.c_str())->Clone(name.c_str())));
+			for (auto && name : histograms) {
+				TH1* h = dynamic_cast<TH1*>(dir->Get(name.c_str()));
+				h->SetDirectory(0);  // revoke gDirectory object ownership that this histogram won't get deleted when the file or directory is closed
+				merged_histograms.push_back(h);
+			}
 		else
 			for (auto hist : merged_histograms)
 				hist->Add(dynamic_cast<TH1*>(dir->Get(hist->GetName())));
