@@ -1,4 +1,4 @@
-// compile with: g++ -std=c++11 -O3 `root-config --cflags --glibs` -lSpectrum merge_histograms.cpp -o merge_histograms
+// compile with: g++ -std=c++11 -O3 merge_histograms.cpp -o merge_histograms `root-config --cflags --glibs` -lSpectrum
 
 #include <stdlib.h>
 #include <stdio.h>
