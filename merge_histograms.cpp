@@ -523,6 +523,15 @@ int main(int argc, char** argv)
 
 	for (auto it : files) {
 		file = TFile::Open(it.c_str());
+		if (!file->IsOpen()) {
+			std::cerr << "Unable to open file '" << file->GetName() << "'. It will be skipped." << std::endl;
+			continue;
+		}
+		if (!file->GetListOfKeys()->GetSize()) {
+			std::cerr << "Found no directory in file '" << file->GetName() << "'. Skip this file." << std::endl;
+			file->Close();
+			continue;
+		}
 		strcpy(dir_name, file->GetListOfKeys()->First()->GetName());
 		dir = file->GetDirectory(dir_name);
 		if (merged_histograms.empty())
@@ -532,8 +541,14 @@ int main(int argc, char** argv)
 				merged_histograms.push_back(h);
 			}
 		else
-			for (auto hist : merged_histograms)
-				hist->Add(dynamic_cast<TH1*>(dir->Get(hist->GetName())));
+			for (auto hist : merged_histograms) {
+				TH1* h = dynamic_cast<TH1*>(dir->Get(hist->GetName()));
+				if (!h) {
+					std::cerr << "Histogram " << hist->GetName() << "not found in file " << file->GetName() << ". Skipt it." << std::endl;
+					continue;
+				}
+				hist->Add(h);
+			}
 		file->Close();
 	}
 
@@ -541,6 +556,9 @@ int main(int argc, char** argv)
 	for (auto hist : merged_histograms)
 		hist->Write();
 	file->Close();
+
+	for (auto hist : merged_histograms)
+		delete hist;
 
 	return EXIT_SUCCESS;
 }
